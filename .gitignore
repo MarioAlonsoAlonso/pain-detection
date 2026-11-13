@@ -1,0 +1,14 @@
+# Entorno virtual
+.venv/
+
+# Caché de Python
+__pycache__/
+
+# Checkpoints
+checkpoints/
+
+# Datos
+data/
+
+# Logs de entrenamiento (se generan en cada ejecución de train.py)
+logs/

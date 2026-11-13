@@ -1,0 +1,12 @@
+                 precision    recall  f1-score   support
+
+    No pain (0)     0.9938    0.9756    0.9846       164
+  Mild pain (1)     0.9702    0.9879    0.9790       165
+Severe pain (2)     0.9939    0.9939    0.9939       165
+
+       accuracy                         0.9858       494
+      macro avg     0.9860    0.9858    0.9858       494
+   weighted avg     0.9860    0.9858    0.9858       494
+
+Macro AUC    : 0.9978
+Weighted AUC : 0.9978
