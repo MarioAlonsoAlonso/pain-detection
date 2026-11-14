@@ -373,6 +373,3 @@ Además, en GPU: ruido gaussiano, brillo y contraste (50 %), desenfoque gaussian
 - El reparto en entrenamiento, validación y test es determinista para una misma `SEED`.
 - Cada checkpoint guarda los hiperparámetros del modelo bajo la clave `config`.
 
-## Documentación adicional
-
-- El PDF "TFG - Alonso Alonso, Mario" incluye un informe completo con todos los detalles del modelado, construcción y resultados de la arquitectura.
