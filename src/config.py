@@ -54,12 +54,14 @@ LSTM_NUM_LAYERS: int = 2
 
 # ─── Training ─────────────────────────────────────────────────────────────────
 BATCH_SIZE: int = 8
-LEARNING_RATE: float = 1e-4
 WEIGHT_DECAY: float = 1e-2
 # Fase 1 (EfficientNet congelado, --freeze_backbone)
+PHASE1_LEARNING_RATE: float = 1e-3
 PHASE1_NUM_EPOCHS: int = 20
 PHASE1_EARLY_STOPPING_PATIENCE: int = 5
-# Fase 2 (fine-tuning completo)
+# Fase 2 (fine-tuning completo): learning rate menor para no destruir lo
+# aprendido por EfficientNet al descongelarlo
+LEARNING_RATE: float = 1e-4
 NUM_EPOCHS: int = 50
 EARLY_STOPPING_PATIENCE: int = 12
 
@@ -69,14 +71,13 @@ VAL_RATIO: float = 0.15
 TEST_RATIO: float = 0.15
 
 # ─── Augmentation ─────────────────────────────────────────────────────────────
-WEBCAM_AUG: bool = False      # True → añade degradaciones de webcam real (resolución, motion blur, color temp)
+# Geométricas (Fase 2, en GPU, iguales para frames y landmarks)
 AUG_ROTATION_DEGREES: float = 10.0  # ± degrees
-AUG_BRIGHTNESS: float = 0.10        # ± fraction
 AUG_FLIP_PROB: float = 0.5          # horizontal flip probability
 AUG_TRANSLATE: float = 0.10         # max translation as fraction of image size
-
 AUG_TEMPORAL_JITTER: int   = 2      # máx. desplazamiento aleatorio de índice de frame (±frames)
-AUG_RANDOM_ERASE_PROB: float = 0.5  # probabilidad de borrar un rectángulo aleatorio del frame
+# Las fotométricas (ruido, brillo, contraste, desenfoque y oclusiones) tienen
+# sus probabilidades en GpuAugmentation (train.py).
 AUG_MIXUP_ALPHA: float = 0.4        # parámetro Beta para MixUp (0 = desactivado)
 
 # ─── Hardware / Reproducibility ───────────────────────────────────────────────

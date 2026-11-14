@@ -62,9 +62,7 @@ log = logging.getLogger(__name__)
 class GpuGeometricAugmentation(nn.Module):
     """
     Aumentaciones geométricas en GPU aplicadas de forma consistente a frames
-    y landmarks, eliminando el cuello de botella que generaban los workers CPU.
-
-    Sustituye a _augment() de dataset.py cuando gpu_augment=True.
+    y landmarks (Fase 2).
 
     Entradas:
         frames    : (B, T, 3, H, W) — tensores float normalizados con ImageNet
@@ -209,54 +207,6 @@ class GpuAugmentation(nn.Module):
         return k.view(1, 1, size, size).expand(3, 1, size, size).contiguous()
 
 
-# ─── Webcam simulation augmentation ──────────────────────────────────────────
-
-class WebcamAugmentation(nn.Module):
-    """
-    Simula degradaciones típicas de una webcam de consumo sobre tensores GPU.
-    Se aplica después de GpuAugmentation, solo en train.
-
-    Transformaciones:
-      - Degradación de resolución: downsample+upsample simula cámara de baja resolución
-      - Motion blur direccional: cabeza en movimiento durante la captura
-      - Desplazamiento de temperatura de color: iluminación cálida/fría de habitación
-    """
-
-    def forward(self, frames: torch.Tensor) -> torch.Tensor:
-        B, T, C, H, W = frames.shape
-        x = frames.view(B * T, C, H, W)
-
-        for b in range(B):
-            s, e = b * T, (b + 1) * T
-
-            # Degradación de resolución (50%)
-            if torch.rand(()).item() < 0.5:
-                scale  = float(torch.empty(()).uniform_(0.4, 0.75).item())
-                clip   = F.interpolate(x[s:e], scale_factor=scale, mode="bilinear", align_corners=False)
-                x[s:e] = F.interpolate(clip, size=(H, W), mode="bilinear", align_corners=False)
-
-            # Motion blur direccional (40%)
-            if torch.rand(()).item() < 0.4:
-                ksize = int(torch.randint(1, 5, ()).item()) * 2 + 1
-                k     = torch.zeros(ksize, ksize, device=x.device, dtype=x.dtype)
-                if torch.rand(()).item() < 0.5:
-                    k[ksize // 2, :] = 1.0 / ksize   # horizontal
-                else:
-                    k[:, ksize // 2] = 1.0 / ksize   # vertical
-                k      = k.view(1, 1, ksize, ksize).expand(C, 1, ksize, ksize).contiguous()
-                x[s:e] = F.conv2d(x[s:e], k, padding=ksize // 2, groups=C)
-
-            # Temperatura de color (60%)
-            if torch.rand(()).item() < 0.6:
-                shift     = float(torch.empty(()).uniform_(-0.12, 0.12).item())
-                clip      = x[s:e].clone()
-                clip[:, 0] = (clip[:, 0] + shift).clamp(-2.5, 2.5)   # rojo
-                clip[:, 2] = (clip[:, 2] - shift).clamp(-2.5, 2.5)   # azul
-                x[s:e]    = clip
-
-        return x.view(B, T, C, H, W)
-
-
 # ─── Reproducibility ─────────────────────────────────────────────────────────
 
 def set_seed(seed: int = config.SEED) -> None:
@@ -325,7 +275,7 @@ def _mixup_batch(frames, landmarks, labels, alpha):
     return frames_mix, landmarks_mix, labels, labels[perm], lam
 
 
-def train_epoch(model, loader, optimiser, criterion, device, writer, epoch, scaler, gpu_aug=None, webcam_aug=None, gpu_geom_aug=None):
+def train_epoch(model, loader, optimiser, criterion, device, writer, epoch, scaler, gpu_aug=None, gpu_geom_aug=None):
     model.train()
     total_loss  = 0.0
     correct     = 0
@@ -348,8 +298,6 @@ def train_epoch(model, loader, optimiser, criterion, device, writer, epoch, scal
             # GPU domain augmentation (only for raw frames, not cached features)
             if gpu_aug is not None and frames.ndim == 5:
                 frames = gpu_aug(frames)
-            if webcam_aug is not None and frames.ndim == 5:
-                frames = webcam_aug(frames)
             # MixUp after all other augmentations so each sample is degraded independently
             if use_mixup:
                 frames, landmarks, labels_a, labels_b, lam = _mixup_batch(
@@ -581,20 +529,17 @@ def _train(args, run: RunLogger, phase: str):
     use_cache    = args.freeze_backbone and args.cache_path is not None and Path(args.cache_path).exists()
     effective_cache = args.cache_path if use_cache else None
     gpu_aug      = None if use_cache else GpuAugmentation().to(device)
-    webcam_aug   = None if use_cache else (WebcamAugmentation().to(device) if config.WEBCAM_AUG else None)
     gpu_geom_aug = None if use_cache else GpuGeometricAugmentation().to(device)
     log.info("Data pipeline: %s", "cached features (Phase-1)" if use_cache else "raw frames + GPU aug")
     if use_cache:
         log.info("Fase 1 — caché: %s", effective_cache)
-    log.info("Webcam augmentation: %s", "enabled" if webcam_aug is not None else "disabled")
     log.info("GPU geometric augmentation: %s", "enabled" if gpu_geom_aug is not None else "disabled")
 
     # ── DataLoaders ──────────────────────────────────────────────────────────
     log.info("Dataset: npy_dir=%s", args.npy_dir)
     train_loader, val_loader, test_loader, train_labels = \
         build_dataloaders(npy_dir=args.npy_dir, batch_size=args.batch_size,
-                          cache_path=effective_cache,
-                          gpu_augment=not use_cache)
+                          cache_path=effective_cache)
 
     split_sizes = {"train": len(train_loader.dataset),
                    "val":   len(val_loader.dataset),
@@ -724,7 +669,7 @@ def _train(args, run: RunLogger, phase: str):
         lr = optimiser.param_groups[0]["lr"]
         train_loss, train_acc = train_epoch(
             model, train_loader, optimiser, criterion, device, writer, epoch, scaler,
-            gpu_aug, webcam_aug, gpu_geom_aug,
+            gpu_aug, gpu_geom_aug,
         )
         val_loss, val_acc = evaluate_epoch(
             model, val_loader, criterion, device, writer, epoch, "val"
@@ -810,7 +755,8 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_dir", default=str(config.CHECKPOINT_DIR))
     parser.add_argument("--log_dir",        default=str(config.LOG_DIR))
     parser.add_argument("--batch_size",     type=int,   default=config.BATCH_SIZE)
-    parser.add_argument("--lr",             type=float, default=config.LEARNING_RATE)
+    parser.add_argument("--lr",             type=float, default=None,
+                        help="Learning rate inicial (por defecto: 1e-3 en Fase 1, 1e-4 en Fase 2)")
     parser.add_argument("--weight_decay",   type=float, default=config.WEIGHT_DECAY)
     parser.add_argument("--epochs",         type=int,   default=None,
                         help="Épocas máximas (por defecto: 20 en Fase 1, 50 en Fase 2)")
@@ -829,6 +775,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Valores por defecto según la fase
+    if args.lr is None:
+        args.lr = config.PHASE1_LEARNING_RATE if args.freeze_backbone else config.LEARNING_RATE
     if args.epochs is None:
         args.epochs = config.PHASE1_NUM_EPOCHS if args.freeze_backbone else config.NUM_EPOCHS
     if args.patience is None:

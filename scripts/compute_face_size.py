@@ -63,7 +63,6 @@ def sample_ratios(video_path: Path, face_mesh, frames_per_video: int) -> list[fl
             if results.multi_face_landmarks:
                 lm    = results.multi_face_landmarks[0]
                 x_px  = np.array([p.x for p in lm.landmark]) * w
-                y_px  = np.array([p.y for p in lm.landmark]) * h
                 face_w = x_px.max() - x_px.min()
                 ratios.append(float(face_w / w))
 
@@ -122,9 +121,9 @@ def main(raw_dir: Path, frames_per_video: int, max_videos: int) -> None:
               f"mediana={np.median(r):.4f}  std={r.std():.4f}")
 
     mean_val = arr.mean()
-    print(f"\n══ Valor recomendado para inference.py ══════════════════════════════")
+    print("\n══ Valor recomendado para inference.py ══════════════════════════════")
     print(f"  DATASET_FACE_RATIO = {mean_val:.4f}")
-    print(f"  (pon este valor en la constante DATASET_FACE_RATIO de inference.py)")
+    print("  (pon este valor en la constante DATASET_FACE_RATIO de inference.py)")
 
 
 if __name__ == "__main__":

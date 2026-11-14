@@ -177,7 +177,7 @@ Solo se entrenan el codificador de landmarks, la LSTM y el clasificador, sobre l
 python train.py --freeze_backbone
 ```
 
-Por defecto: 20 épocas, early stopping con paciencia 5. Guarda `checkpoints/best_model_phase1.pth`.
+Por defecto: *learning rate* 1e-3, 20 épocas y early stopping con paciencia 5. Guarda `checkpoints/best_model_phase1.pth`.
 
 ### 5 — Entrenar la Fase 2 (ajuste fino completo)
 
@@ -187,7 +187,7 @@ Se descongela EfficientNet y se entrena todo el modelo con aumentación de datos
 python train.py --transfer_weights checkpoints/best_model_phase1.pth
 ```
 
-Por defecto: 50 épocas, early stopping con paciencia 12. Guarda `checkpoints/best_model.pth`.
+Por defecto: *learning rate* 1e-4 (menor que en la Fase 1, para no destruir lo aprendido por EfficientNet), 50 épocas y early stopping con paciencia 12. Guarda `checkpoints/best_model.pth`.
 
 Opciones comunes a ambas fases: `--epochs`, `--patience`, `--lr`, `--batch_size`, `--weight_decay`.
 
@@ -249,6 +249,20 @@ Cada 250 ms se toma un fotograma y se predice sobre los últimos 16 (4 segundos)
 | `r` | Vaciar el buffer |
 
 Opciones: `--checkpoint`, `--smooth` (factor de la media móvil exponencial, 0.35 por defecto) y `--majority_vote`.
+
+---
+
+## Limitaciones
+
+El prototipo funciona correctamente, pero, como se explica en la memoria, está sujeto a condiciones favorables. Responde mucho mejor ante situaciones parecidas a las del dataset que ante otras:
+
+- **Posición de la cámara y de la cabeza.** Todos los vídeos muestran un plano cenital de un paciente tumbado boca arriba, con la cara completa y centrada. La cámara tiene que colocarse de forma parecida. La interfaz ayuda a calibrar la inclinación (barra *Pitch*) y la distancia (barra *Dist*), pero no hay calibración del giro lateral de la cabeza: se presupone una perspectiva centrada (apartado 5.3).
+- **Cara no visible.** Si el paciente se mueve o se gira y la cámara deja de ver su cara, el sistema no puede valorar el dolor. Según el personal sanitario consultado, el plano cenital cubre en torno al 80 % de los casos (apartados 6.1 y 7).
+- **Iluminación.** Necesita una iluminación correcta (apartado 6.3).
+- **Resolución de la cámara.** Con una cámara de baja resolución se pierde detalle al redimensionar el recorte a 224×224 píxeles. Con una webcam de 640×480, la cara debería ocupar más de un tercio del ancho de la imagen (224/640 ≈ 0,35). Por lo mismo, cámaras distintas pueden dar resultados algo distintos ante la misma escena (apartado 5.3).
+- **Rango de expresiones limitado.** El dataset solo contiene caras neutras o con dolor, y siempre con los ojos cerrados. Se asume que un paciente sin dolor mantiene una expresión neutra y no hace otros gestos (alegría, sorpresa…). El modelo funciona mejor con expresiones de dolor parecidas a las que genera Veo 3.1 (apartados 3.3 y 6.3).
+- **Datos sintéticos.** El modelo se ha entrenado y evaluado solo con vídeos generados por Veo 3.1. La precisión en test (en torno al 99 %) mide su rendimiento sobre ese dataset, no sobre pacientes reales, y es habitual que los modelos de este campo empeoren al enfrentarse a otros entornos (apartado 6.2).
+- **Alcance.** Solo evalúa el indicador de musculatura facial de la escala ESCID, no la escala completa, y no pretende detectar el dolor fingido ni el dolor crónico (apartados 2 y 6.3).
 
 ---
 
@@ -329,10 +343,11 @@ Los hiperparámetros están en [`src/config.py`](src/config.py).
 | Parámetro | Valor | Descripción |
 |-----------|-------|-------------|
 | `BATCH_SIZE` | 8 | Tamaño de lote |
-| `LEARNING_RATE` | 1e-4 | Tasa de aprendizaje inicial (AdamW, coseno) |
-| `WEIGHT_DECAY` | 1e-2 | Regularización |
-| `PHASE1_NUM_EPOCHS` / `PHASE1_EARLY_STOPPING_PATIENCE` | 20 / 5 | Fase 1 |
-| `NUM_EPOCHS` / `EARLY_STOPPING_PATIENCE` | 50 / 12 | Fase 2 |
+| `WEIGHT_DECAY` | 1e-2 | Regularización (AdamW) |
+| `PHASE1_LEARNING_RATE` / `PHASE1_NUM_EPOCHS` / `PHASE1_EARLY_STOPPING_PATIENCE` | 1e-3 / 20 / 5 | Fase 1 |
+| `LEARNING_RATE` / `NUM_EPOCHS` / `EARLY_STOPPING_PATIENCE` | 1e-4 / 50 / 12 | Fase 2 |
+
+El *learning rate* decrece durante cada fase siguiendo una curva coseno.
 | `ORDINAL_ALPHA` | 0.5 | Peso de la penalización por distancia entre clases en la pérdida |
 | `SEED` | 42 | Semilla |
 
@@ -347,7 +362,6 @@ La pérdida es entropía cruzada con una penalización proporcional a la distanc
 | `AUG_TRANSLATE` | 0.10 | Traslación máxima (fracción de la imagen) |
 | `AUG_TEMPORAL_JITTER` | 2 | Desplazamiento temporal máximo (±fotogramas) |
 | `AUG_MIXUP_ALPHA` | 0.4 | MixUp (también en Fase 1) |
-| `WEBCAM_AUG` | `False` | Degradaciones de webcam (desactivado) |
 
 Además, en GPU: ruido gaussiano, brillo y contraste (50 %), desenfoque gaussiano (30 %) y oclusiones (50 %).
 
@@ -359,6 +373,6 @@ Además, en GPU: ruido gaussiano, brillo y contraste (50 %), desenfoque gaussian
 - El reparto en entrenamiento, validación y test es determinista para una misma `SEED`.
 - Cada checkpoint guarda los hiperparámetros del modelo bajo la clave `config`.
 
-## Problemas conocidos
+## Documentación adicional
 
-- En Windows, `train.py` termina con el código de salida `-1073740791` (`0xC0000409`) aunque el entrenamiento haya ido bien. Lo provoca cuDNN al cerrarse el proceso, por usar una LSTM de dos capas con dropout entre capas después de haber hecho algún `backward`. Ocurre cuando los checkpoints ya están guardados, así que no afecta a los resultados: si aparece la línea `Training complete` en la salida, el entrenamiento es válido. La única consecuencia es que no conviene encadenar comandos con `&&` detrás de `train.py`. Se ha mantenido así porque las alternativas que evitan el error hacen el entrenamiento más lento.
+- El PDF "TFG - Alonso Alonso, Mario" incluye un informe completo con todos los detalles del modelado, construcción y resultados de la arquitectura.

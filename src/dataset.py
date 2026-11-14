@@ -6,8 +6,9 @@ Each sample is a video clip represented as:
   landmarks : (T, landmark_dim) — normalised landmark coordinates
   label     : int (0 / 1 / 2)
 
-On-the-fly augmentation is applied only to the training split and uses the
-same geometric transform for frames and landmarks to keep them consistent.
+La aumentación de la Fase 2 se aplica en la GPU (train.py). En la Fase 1, con
+las características cacheadas, CachedFeaturesDataset aplica el jitter temporal
+y el volteo de los landmarks.
 """
 
 import h5py
@@ -24,85 +25,24 @@ _to_tensor = transforms.ToTensor()
 _normalise = transforms.Normalize(config.FRAME_MEAN, config.FRAME_STD)
 
 
-# ─── Augmentation helpers ─────────────────────────────────────────────────────
-
-def _augment(
-    frame_bgr: np.ndarray,
-    lm: np.ndarray,
-    rotation_deg: float,
-    translate: float,
-    brightness_delta: float,
-    do_flip: bool,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Apply consistent geometric augmentation to a frame and its landmarks.
-
-    Parameters
-    ----------
-    frame_bgr     : (H, W, 3) uint8 BGR
-    lm            : (N, 3) float32  — x,y already in [0,1]; z is relative depth
-    rotation_deg  : rotation angle in degrees (positive = counter-clockwise)
-    translate     : translation magnitude as a fraction of image size (applied
-                    equally in x and y direction with the supplied sign)
-    brightness_delta : additive brightness change in [0,1] range
-    do_flip       : horizontal flip flag
-
-    Returns
-    -------
-    augmented frame (H, W, 3) uint8, flattened landmarks (N*3,) float32
-    """
-    H, W = frame_bgr.shape[:2]
-    lm = lm.copy()  # avoid mutating caller's array
-
-    # Rotation — applied to image and to the (x,y) pixel coordinates of landmarks
-    if rotation_deg != 0.0:
-        M = cv2.getRotationMatrix2D((W / 2.0, H / 2.0), rotation_deg, 1.0)
-        frame_bgr = cv2.warpAffine(frame_bgr, M, (W, H))
-
-        xy_px   = lm[:, :2] * np.array([W, H], dtype=np.float32)
-        xy_px_h = np.hstack([xy_px, np.ones((len(xy_px), 1), dtype=np.float32)])
-        xy_rot  = (M @ xy_px_h.T).T
-        lm[:, :2] = xy_rot / np.array([W, H], dtype=np.float32)
-
-    # Translation (normalised units)
-    if translate != 0.0:
-        tx_px = int(translate * W)
-        ty_px = int(translate * H)
-        M_t = np.float32([[1, 0, tx_px], [0, 1, ty_px]])
-        frame_bgr  = cv2.warpAffine(frame_bgr, M_t, (W, H))
-        lm[:, 0] += translate
-        lm[:, 1] += translate
-
-    # Horizontal flip
-    if do_flip:
-        frame_bgr = cv2.flip(frame_bgr, 1)
-        lm[:, 0]  = 1.0 - lm[:, 0]
-
-    # Brightness — photometric only (does not affect landmarks)
-    if brightness_delta != 0.0:
-        frame_f   = frame_bgr.astype(np.float32) / 255.0
-        frame_f   = np.clip(frame_f + brightness_delta, 0.0, 1.0)
-        frame_bgr = (frame_f * 255).astype(np.uint8)
-
-    return frame_bgr, lm.flatten()
-
-
 # ─── Dataset ─────────────────────────────────────────────────────────────────
 
 class PainDataset(Dataset):
     """
     Clips preprocesados por preprocess.py (formato NPY).
 
+    Solo lee y normaliza: la aumentación de datos de la Fase 2 se aplica en la
+    GPU, sobre el lote completo, en train.py (GpuGeometricAugmentation y
+    GpuAugmentation).
+
     Los tres splits comparten los mismos arrays (memmap) — sin copias en RAM.
 
     Parameters
     ----------
-    frames      : (N, T, H, W, 3) uint8 BGR — frames.npy
-    landmarks   : (N, T, landmark_dim) float32 — landmarks.npy
-    labels      : (N,) int — labels.npy
-    indices     : list of video indices for this split
-    augment     : whether to apply data augmentation
-    gpu_augment : si True, las aumentaciones geométricas se dejan para la GPU
+    frames    : (N, T, H, W, 3) uint8 BGR — frames.npy
+    landmarks : (N, T, landmark_dim) float32 — landmarks.npy
+    labels    : (N,) int — labels.npy
+    indices   : list of video indices for this split
     """
 
     def __init__(
@@ -111,17 +51,9 @@ class PainDataset(Dataset):
         landmarks: np.ndarray,
         labels: np.ndarray,
         indices: list,
-        augment: bool = False,
-        gpu_augment: bool = False,
     ):
         super().__init__()
         self.indices = indices
-        self.augment = augment
-        # gpu_augment=True: los workers solo leen y normalizan; las transformaciones
-        # geométricas (flip, rotación, traslación, jitter temporal) las aplica
-        # GpuGeometricAugmentation en train_epoch, eliminando el cuello de botella CPU.
-        self.gpu_augment = gpu_augment
-
         self._frames_all    = frames
         self._landmarks_all = landmarks
         self.labels         = labels
@@ -140,50 +72,14 @@ class PainDataset(Dataset):
         lm_raw     = self._landmarks_all[i]   # (T, landmark_dim) float32
         label = int(self.labels[i])
 
-        if self.augment and not self.gpu_augment:
-            rot   = np.random.uniform(-config.AUG_ROTATION_DEGREES,
-                                       config.AUG_ROTATION_DEGREES)
-            trans = np.random.uniform(-config.AUG_TRANSLATE,
-                                       config.AUG_TRANSLATE)
-            brit  = np.random.uniform(-config.AUG_BRIGHTNESS,
-                                       config.AUG_BRIGHTNESS)
-            flip  = np.random.random() < config.AUG_FLIP_PROB
-
-            jitter  = np.random.randint(
-                -config.AUG_TEMPORAL_JITTER,
-                 config.AUG_TEMPORAL_JITTER + 1,
-                size=self.num_frames,
-            )
-            t_indices = np.clip(np.arange(self.num_frames) + jitter, 0, self.num_frames - 1)
-            frames_raw = frames_raw[t_indices]
-            lm_raw     = lm_raw[t_indices]
-        else:
-            rot = trans = brit = 0.0
-            flip = False
-
         out_frames = []
-        out_lm     = []
-
         for t in range(self.num_frames):
-            frame = frames_raw[t]               # (H, W, 3) uint8 BGR
-            lm_2d = lm_raw[t].reshape(-1, 3)   # (N_landmarks, 3)
+            # BGR → RGB → Tensor → normalización ImageNet
+            frame_rgb = cv2.cvtColor(frames_raw[t], cv2.COLOR_BGR2RGB)
+            out_frames.append(_normalise(_to_tensor(frame_rgb)))   # (3, H, W)
 
-            if self.augment:
-                frame, lm_flat = _augment(frame, lm_2d, rot, trans, brit, flip)
-            else:
-                lm_flat = lm_2d.flatten()
-
-            # BGR → RGB → Tensor → normalización
-            # (domain aug: color jitter, blur, noise, erase se aplican en GPU en train.py)
-            frame_rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_tensor = _normalise(_to_tensor(frame_rgb))          # (3, H, W)
-            lm_tensor    = torch.tensor(lm_flat, dtype=torch.float32)
-
-            out_frames.append(frame_tensor)
-            out_lm.append(lm_tensor)
-
-        frames_t = torch.stack(out_frames)  # (T, 3, H, W)
-        lm_t     = torch.stack(out_lm)     # (T, landmark_dim)
+        frames_t = torch.stack(out_frames)                          # (T, 3, H, W)
+        lm_t     = torch.tensor(np.asarray(lm_raw), dtype=torch.float32)   # (T, landmark_dim)
 
         return frames_t, lm_t, torch.tensor(label, dtype=torch.long)
 
@@ -260,7 +156,6 @@ def build_dataloaders(
     use_weighted_sampler: bool = True,
     seed: int = config.SEED,
     cache_path: str | None = None,
-    gpu_augment: bool = False,
 ):
     """
     Build stratified train / val / test DataLoaders.
@@ -324,8 +219,7 @@ def build_dataloaders(
         frames_mm    = np.load(npy / "frames.npy",    mmap_mode="r")
         landmarks_mm = np.load(npy / "landmarks.npy", mmap_mode="r")
 
-        train_ds = PainDataset(frames_mm, landmarks_mm, labels, train_idx,
-                               augment=True, gpu_augment=gpu_augment)
+        train_ds = PainDataset(frames_mm, landmarks_mm, labels, train_idx)
         val_ds   = PainDataset(frames_mm, landmarks_mm, labels, val_idx)
         test_ds  = PainDataset(frames_mm, landmarks_mm, labels, test_idx)
 

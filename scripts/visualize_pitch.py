@@ -62,7 +62,7 @@ def main(npy_dir: Path, out: Path) -> None:
     print(f"Dataset: {landmarks.shape[0]} muestras × {landmarks.shape[1]} frames")
     pitch = compute_pitch(np.asarray(landmarks))
 
-    print(f"\nPitch medio por vídeo (z_barbilla − z_frente):")
+    print("\nPitch medio por vídeo (z_barbilla − z_frente):")
     print(f"  Mediana: {np.median(pitch):+.4f}   ← DATASET_PITCH_MEDIAN de inference.py")
     print(f"  Media:   {pitch.mean():+.4f}")
     print(f"  Std:      {pitch.std():.4f}")

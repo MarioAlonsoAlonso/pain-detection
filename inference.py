@@ -294,7 +294,6 @@ def draw_overlay(
     """Render the prediction overlay onto *frame* (in-place)."""
     h, w = frame.shape[:2]
     pred  = engine.pred
-    conf  = engine.conf
     bbox  = engine.face_bbox
     buf_n = len(engine.frame_buf)
     buf_t = engine.buffer_size

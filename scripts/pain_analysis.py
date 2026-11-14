@@ -283,8 +283,8 @@ def main() -> None:
     print(f"CSVs a procesar   : {len(csvs)}")
     print(f"Directorio        : {openface_dir}")
     print(f"Confianza mínima  : {CONFIDENCE_THRESHOLD}")
-    print(f"PSPI fórmula      : AU04_r + max(AU06_r, AU07_r) + AU09_r + AU45_r")
-    print(f"Métrica           : media de los frames válidos por vídeo")
+    print("PSPI fórmula      : AU04_r + max(AU06_r, AU07_r) + max(AU09_r, AU10_r) + AU45_r")
+    print("Métrica           : media de los frames válidos por vídeo")
     print(f"CSV de salida     : {out_path}\n")
 
     au_cols    = [f"au_{k.lower()}_mean" for k in AU_COLS]
