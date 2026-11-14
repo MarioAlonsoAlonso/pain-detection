@@ -12,6 +12,8 @@ El sistema clasifica el nivel de dolor que expresa un rostro en **tres categorí
 
 Incluye la generación del dataset sintético con Veo 3.1, el preprocesado de los vídeos, el entrenamiento en dos fases, la evaluación y un prototipo de inferencia en tiempo real con webcam.
 
+El proyecto está pensado para ser ejecutado en su totalidad en un ordenador personal, de forma que la arquitectura, la estrategia de entrenamiento y la capacidad de inferencia buscan ser tan precisas como eficientes con recursos limitados.
+
 ---
 
 ## Arquitectura
